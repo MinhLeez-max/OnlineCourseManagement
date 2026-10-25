@@ -6,3 +6,8 @@ obj/
 *.suo
 .env
 .env.*
+.vs/
+bin/
+obj/
+*.user
+*.suo
