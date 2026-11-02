@@ -21,25 +21,27 @@ namespace OnlineCourseManagement.Controllers
 
         private int? CurrentUserId()
         {
-            var value = User.FindFirstValue(
+            var id = User.FindFirstValue(
                 ClaimTypes.NameIdentifier);
 
-            return int.TryParse(value, out int id)
-                ? id : null;
+            return int.TryParse(id, out var userId)
+                ? userId
+                : null;
         }
 
-        private bool IsAdmin =>
-            User.IsInRole("Admin");
+        private bool IsAdmin()
+        {
+            return User.IsInRole("Admin");
+        }
 
         private bool CanManage(Course course)
         {
-            return IsAdmin ||
+            return IsAdmin() ||
                 (User.IsInRole("Instructor") &&
                  course.InstructorId == CurrentUserId());
         }
 
         // GET: api/courses
-        [AllowAnonymous]
         [HttpGet]
         public async Task<IActionResult> GetAll(
             [FromQuery] string? search,
@@ -50,16 +52,12 @@ namespace OnlineCourseManagement.Controllers
                 .AsQueryable();
 
             if (!string.IsNullOrWhiteSpace(search))
-            {
                 query = query.Where(c =>
                     c.Title.Contains(search));
-            }
 
             if (categoryId.HasValue)
-            {
                 query = query.Where(c =>
                     c.CategoryId == categoryId.Value);
-            }
 
             var courses = await query
                 .OrderByDescending(c => c.CreatedAt)
@@ -82,8 +80,7 @@ namespace OnlineCourseManagement.Controllers
             return Ok(courses);
         }
 
-        // GET: api/courses/1
-        [AllowAnonymous]
+        // GET: api/courses/{id}
         [HttpGet("{id:int}")]
         public async Task<IActionResult> GetById(int id)
         {
@@ -112,9 +109,9 @@ namespace OnlineCourseManagement.Controllers
             return Ok(course);
         }
 
-        // GET: api/courses/my-courses
+        // GET: api/courses/my
         [Authorize(Roles = "Instructor")]
-        [HttpGet("my-courses")]
+        [HttpGet("my")]
         public async Task<IActionResult> MyCourses()
         {
             var userId = CurrentUserId();
@@ -125,13 +122,15 @@ namespace OnlineCourseManagement.Controllers
             var courses = await _context.Courses
                 .AsNoTracking()
                 .Where(c => c.InstructorId == userId)
+                .OrderByDescending(c => c.CreatedAt)
                 .Select(c => new
                 {
                     c.Id,
                     c.Title,
+                    c.Description,
                     c.Price,
                     c.CategoryId,
-                    c.CreatedAt
+                    c.InstructorId
                 })
                 .ToListAsync();
 
@@ -144,53 +143,19 @@ namespace OnlineCourseManagement.Controllers
         public async Task<IActionResult> Create(
             [FromBody] CreateCourseDto dto)
         {
-            var userId = CurrentUserId();
-
-            if (userId == null)
-                return Unauthorized();
-
-            bool categoryExists = await _context.Categories
-                .AnyAsync(c => c.Id == dto.CategoryId);
-
-            if (!categoryExists)
+            if (!await _context.Categories
+                .AnyAsync(c => c.Id == dto.CategoryId))
+            {
                 return BadRequest(new
                 {
                     message = "Danh mục không tồn tại"
                 });
-
-            int instructorId;
-
-            if (IsAdmin)
-            {
-                if (!dto.InstructorId.HasValue)
-                    return BadRequest(new
-                    {
-                        message = "Admin phải chọn giảng viên"
-                    });
-
-                instructorId = dto.InstructorId.Value;
-            }
-            else
-            {
-                if (dto.InstructorId.HasValue &&
-                    dto.InstructorId.Value != userId.Value)
-                {
-                    return Forbid();
-                }
-
-                instructorId = userId.Value;
             }
 
-            bool instructorExists = await _context.Users
-                .AnyAsync(u =>
-                    u.Id == instructorId &&
-                    u.Role == "Instructor");
+            var userId = CurrentUserId();
 
-            if (!instructorExists)
-                return BadRequest(new
-                {
-                    message = "Giảng viên không hợp lệ"
-                });
+            if (userId == null)
+                return Unauthorized();
 
             var course = new Course
             {
@@ -198,7 +163,8 @@ namespace OnlineCourseManagement.Controllers
                 Description = dto.Description,
                 Price = dto.Price,
                 CategoryId = dto.CategoryId,
-                InstructorId = instructorId,
+                InstructorId = User.IsInRole("Instructor")
+                    ? userId : null,
                 CreatedAt = DateTime.UtcNow
             };
 
@@ -217,7 +183,7 @@ namespace OnlineCourseManagement.Controllers
                 });
         }
 
-        // PUT: api/courses/1
+        // PUT: api/courses/{id}
         [Authorize(Roles = "Admin,Instructor")]
         [HttpPut("{id:int}")]
         public async Task<IActionResult> Update(
@@ -233,35 +199,13 @@ namespace OnlineCourseManagement.Controllers
             if (!CanManage(course))
                 return Forbid();
 
-            bool categoryExists = await _context.Categories
-                .AnyAsync(c => c.Id == dto.CategoryId);
-
-            if (!categoryExists)
+            if (!await _context.Categories
+                .AnyAsync(c => c.Id == dto.CategoryId))
+            {
                 return BadRequest(new
                 {
                     message = "Danh mục không tồn tại"
                 });
-
-            if (IsAdmin && dto.InstructorId.HasValue)
-            {
-                bool valid = await _context.Users
-                    .AnyAsync(u =>
-                        u.Id == dto.InstructorId.Value &&
-                        u.Role == "Instructor");
-
-                if (!valid)
-                    return BadRequest(new
-                    {
-                        message = "Giảng viên không hợp lệ"
-                    });
-
-                course.InstructorId = dto.InstructorId.Value;
-            }
-            else if (!IsAdmin &&
-                dto.InstructorId.HasValue &&
-                dto.InstructorId != course.InstructorId)
-            {
-                return Forbid();
             }
 
             course.Title = dto.Title;
@@ -273,11 +217,47 @@ namespace OnlineCourseManagement.Controllers
 
             return Ok(new
             {
-                message = "Cập nhật khóa học thành công"
+                message = "Cập nhật thành công"
             });
         }
 
-        // DELETE: api/courses/1
+        // PUT: api/courses/{id}/instructor
+        [Authorize(Roles = "Admin")]
+        [HttpPut("{id:int}/instructor")]
+        public async Task<IActionResult> AssignInstructor(
+            int id,
+            [FromBody] AssignInstructorDto dto)
+        {
+            var course = await _context.Courses
+                .FindAsync(id);
+
+            if (course == null)
+                return NotFound();
+
+            var instructor = await _context.Users
+                .FirstOrDefaultAsync(u =>
+                    u.Id == dto.InstructorId &&
+                    u.Role == "Instructor");
+
+            if (instructor == null)
+                return BadRequest(new
+                {
+                    message = "Giảng viên không tồn tại"
+                });
+
+            course.InstructorId = instructor.Id;
+            await _context.SaveChangesAsync();
+
+            return Ok(new
+            {
+                message = "Phân công thành công",
+                course.Id,
+                course.InstructorId,
+                InstructorName = instructor.FullName
+            });
+        }
+
+        // DELETE: api/courses/{id}
         [Authorize(Roles = "Admin,Instructor")]
         [HttpDelete("{id:int}")]
         public async Task<IActionResult> Delete(int id)
@@ -291,20 +271,31 @@ namespace OnlineCourseManagement.Controllers
             if (!CanManage(course))
                 return Forbid();
 
-            // Không cho xóa khi đã có bài học.
-            bool hasLessons = await _context.Lessons
-                .AnyAsync(l => l.CourseId == id);
-
-            if (hasLessons)
+            // Tránh xóa khóa học đã có bài học.
+            if (await _context.Lessons
+                .AnyAsync(l => l.CourseId == id))
+            {
                 return Conflict(new
                 {
                     message =
-                        "Hãy xóa hoặc xử lý bài học trước khi xóa khóa học"
+                        "Hãy xử lý các bài học trước khi xóa khóa học"
                 });
+            }
 
             _context.Courses.Remove(course);
 
-            await _context.SaveChangesAsync();
+            try
+            {
+                await _context.SaveChangesAsync();
+            }
+            catch (DbUpdateException)
+            {
+                return Conflict(new
+                {
+                    message =
+                        "Khóa học có dữ liệu liên quan, không thể xóa"
+                });
+            }
 
             return Ok(new
             {

@@ -1,12 +1,13 @@
-﻿using Microsoft.AspNetCore.Mvc;
+﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using OnlineCourseManagement.Data;
 using OnlineCourseManagement.Models;
 
 namespace OnlineCourseManagement.Controllers
 {
-    [Route("api/[controller]")]
     [ApiController]
+    [Route("api/[controller]")]
     public class CategoriesController : ControllerBase
     {
         private readonly AppDbContext _context;
@@ -17,6 +18,7 @@ namespace OnlineCourseManagement.Controllers
         }
 
         [HttpGet]
+        [AllowAnonymous]
         public async Task<IActionResult> GetAll()
         {
             var categories = await _context.Categories
@@ -26,11 +28,13 @@ namespace OnlineCourseManagement.Controllers
             return Ok(categories);
         }
 
-        [HttpGet("{id}")]
+        [HttpGet("{id:int}")]
+        [AllowAnonymous]
         public async Task<IActionResult> GetById(int id)
         {
-            var category =
-                await _context.Categories.FindAsync(id);
+            var category = await _context.Categories
+                .AsNoTracking()
+                .FirstOrDefaultAsync(c => c.Id == id);
 
             if (category == null)
                 return NotFound();
@@ -38,7 +42,9 @@ namespace OnlineCourseManagement.Controllers
             return Ok(category);
         }
 
+        // Chỉ Admin được tạo danh mục
         [HttpPost]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> Create(
             [FromBody] Category category)
         {
@@ -53,12 +59,15 @@ namespace OnlineCourseManagement.Controllers
                 category);
         }
 
-        [HttpPut("{id}")]
+        // Chỉ Admin được cập nhật danh mục
+        [HttpPut("{id:int}")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> Update(
-            int id, [FromBody] Category input)
+            int id,
+            [FromBody] Category input)
         {
-            var category =
-                await _context.Categories.FindAsync(id);
+            var category = await _context.Categories
+                .FindAsync(id);
 
             if (category == null)
                 return NotFound();
@@ -71,14 +80,26 @@ namespace OnlineCourseManagement.Controllers
             return NoContent();
         }
 
-        [HttpDelete("{id}")]
+        // Chỉ Admin được xóa danh mục
+        [HttpDelete("{id:int}")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> Delete(int id)
         {
-            var category =
-                await _context.Categories.FindAsync(id);
+            var category = await _context.Categories
+                .FindAsync(id);
 
             if (category == null)
                 return NotFound();
+
+            if (await _context.Courses
+                .AnyAsync(c => c.CategoryId == id))
+            {
+                return Conflict(new
+                {
+                    message =
+                        "Danh mục đang có khóa học, không thể xóa"
+                });
+            }
 
             _context.Categories.Remove(category);
             await _context.SaveChangesAsync();

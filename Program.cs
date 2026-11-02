@@ -6,13 +6,39 @@ using OnlineCourseManagement.Data;
 using OnlineCourseManagement.Models;
 using OnlineCourseManagement.Services;
 using System.Text;
+using Microsoft.OpenApi;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // Controllers và Swagger
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
+builder.Services.AddSwaggerGen(options =>
+{
+    options.SwaggerDoc("v1", new OpenApiInfo
+    {
+        Title = "Online Course Management API",
+        Version = "v1"
+    });
+
+    options.AddSecurityDefinition("Bearer",
+        new OpenApiSecurityScheme
+        {
+            Name = "Authorization",
+            Description = "Nhap JWT Token",
+            In = ParameterLocation.Header,
+            Type = SecuritySchemeType.Http,
+            Scheme = "bearer",
+            BearerFormat = "JWT"
+        });
+
+    options.AddSecurityRequirement(document =>
+        new OpenApiSecurityRequirement
+        {
+            [new OpenApiSecuritySchemeReference(
+                "Bearer", document)] = new List<string>()
+        });
+});
 
 // Database
 builder.Services.AddDbContext<AppDbContext>(options =>

@@ -1,9 +1,9 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using OnlineCourseManagement.Data;
 using OnlineCourseManagement.DTOs;
 using OnlineCourseManagement.Models;
-using Microsoft.AspNetCore.Authorization;
 using System.Security.Claims;
 
 namespace OnlineCourseManagement.Controllers
@@ -19,8 +19,28 @@ namespace OnlineCourseManagement.Controllers
             _context = context;
         }
 
+        private int? CurrentUserId()
+        {
+            var value = User.FindFirstValue(
+                ClaimTypes.NameIdentifier);
+
+            return int.TryParse(value, out var id)
+                ? id : null;
+        }
+
+        private bool CanManage(Course course)
+        {
+            return User.IsInRole("Admin") ||
+                (
+                    User.IsInRole("Instructor") &&
+                    CurrentUserId() != null &&
+                    course.InstructorId == CurrentUserId()
+                );
+        }
+
         // GET: api/lessons
         [HttpGet]
+        [AllowAnonymous]
         public async Task<IActionResult> GetAll()
         {
             var lessons = await _context.Lessons
@@ -31,21 +51,18 @@ namespace OnlineCourseManagement.Controllers
                 {
                     l.Id,
                     l.Title,
-                    l.Content,
-                    l.VideoUrl,
                     l.DurationMinutes,
                     l.OrderIndex,
-                    l.CourseId,
-                    CourseName = l.Course != null
-                        ? l.Course.Title : null
+                    l.CourseId
                 })
                 .ToListAsync();
 
             return Ok(lessons);
         }
 
-        // GET: api/lessons/1
+        // GET: api/lessons/{id}
         [HttpGet("{id:int}")]
+        [Authorize]
         public async Task<IActionResult> GetById(int id)
         {
             var lesson = await _context.Lessons
@@ -55,16 +72,54 @@ namespace OnlineCourseManagement.Controllers
             if (lesson == null)
                 return NotFound(new
                 {
-                    message = "Không tìm thấy bài học"
+                    message = "Bài học không tồn tại"
                 });
 
-            return Ok(lesson);
+            // Admin được xem tất cả
+            if (User.IsInRole("Admin"))
+                return Ok(lesson);
+
+            var userId = CurrentUserId();
+
+            if (userId == null)
+                return Unauthorized();
+
+            // Giảng viên xem bài học của chính mình
+            if (User.IsInRole("Instructor"))
+            {
+                var isOwner = await _context.Courses
+                    .AnyAsync(c =>
+                        c.Id == lesson.CourseId &&
+                        c.InstructorId == userId.Value);
+
+                if (!isOwner)
+                    return Forbid();
+
+                return Ok(lesson);
+            }
+
+            // Student phải đăng ký khóa học
+            if (User.IsInRole("Student"))
+            {
+                var enrolled = await _context.Enrollments
+                    .AnyAsync(e =>
+                        e.StudentId == userId.Value &&
+                        e.CourseId == lesson.CourseId);
+
+                if (!enrolled)
+                    return Forbid();
+
+                return Ok(lesson);
+            }
+
+            return Forbid();
         }
 
-        // GET: api/lessons/course/1
+        // GET: api/lessons/course/{courseId}
         [HttpGet("course/{courseId:int}")]
+        [AllowAnonymous]
         public async Task<IActionResult> GetByCourse(
-            int courseId)
+    int courseId)
         {
             var exists = await _context.Courses
                 .AnyAsync(c => c.Id == courseId);
@@ -79,6 +134,14 @@ namespace OnlineCourseManagement.Controllers
                 .AsNoTracking()
                 .Where(l => l.CourseId == courseId)
                 .OrderBy(l => l.OrderIndex)
+                .Select(l => new
+                {
+                    l.Id,
+                    l.Title,
+                    l.DurationMinutes,
+                    l.OrderIndex,
+                    l.CourseId
+                })
                 .ToListAsync();
 
             return Ok(lessons);
@@ -86,17 +149,21 @@ namespace OnlineCourseManagement.Controllers
 
         // POST: api/lessons
         [HttpPost]
+        [Authorize(Roles = "Admin,Instructor")]
         public async Task<IActionResult> Create(
             [FromBody] CreateLessonDto dto)
         {
-            var courseExists = await _context.Courses
-                .AnyAsync(c => c.Id == dto.CourseId);
+            var course = await _context.Courses
+                .FindAsync(dto.CourseId);
 
-            if (!courseExists)
+            if (course == null)
                 return BadRequest(new
                 {
                     message = "Khóa học không tồn tại"
                 });
+
+            if (!CanManage(course))
+                return Forbid();
 
             var orderExists = await _context.Lessons
                 .AnyAsync(l =>
@@ -104,7 +171,7 @@ namespace OnlineCourseManagement.Controllers
                     l.OrderIndex == dto.OrderIndex);
 
             if (orderExists)
-                return BadRequest(new
+                return Conflict(new
                 {
                     message = "Thứ tự bài học đã tồn tại"
                 });
@@ -134,29 +201,37 @@ namespace OnlineCourseManagement.Controllers
                 });
         }
 
-        // PUT: api/lessons/1
+        // PUT: api/lessons/{id}
         [HttpPut("{id:int}")]
+        [Authorize(Roles = "Admin,Instructor")]
         public async Task<IActionResult> Update(
             int id,
             [FromBody] UpdateLessonDto dto)
         {
             var lesson = await _context.Lessons
-                .FindAsync(id);
+                .Include(l => l.Course)
+                .FirstOrDefaultAsync(l => l.Id == id);
 
             if (lesson == null)
-                return NotFound(new
-                {
-                    message = "Bài học không tồn tại"
-                });
+                return NotFound();
 
-            var courseExists = await _context.Courses
-                .AnyAsync(c => c.Id == dto.CourseId);
+            if (lesson.Course == null ||
+                !CanManage(lesson.Course))
+                return Forbid();
 
-            if (!courseExists)
+            var targetCourse = await _context.Courses
+                .FindAsync(dto.CourseId);
+
+            if (targetCourse == null)
                 return BadRequest(new
                 {
-                    message = "Khóa học không tồn tại"
+                    message = "Khóa học đích không tồn tại"
                 });
+
+            // Kiểm tra cả khóa học đích,
+            // tránh chuyển bài sang khóa học người khác.
+            if (!CanManage(targetCourse))
+                return Forbid();
 
             var orderExists = await _context.Lessons
                 .AnyAsync(l =>
@@ -165,7 +240,7 @@ namespace OnlineCourseManagement.Controllers
                     l.OrderIndex == dto.OrderIndex);
 
             if (orderExists)
-                return BadRequest(new
+                return Conflict(new
                 {
                     message = "Thứ tự bài học đã tồn tại"
                 });
@@ -185,20 +260,24 @@ namespace OnlineCourseManagement.Controllers
             });
         }
 
-        // DELETE: api/lessons/1
+        // DELETE: api/lessons/{id}
         [HttpDelete("{id:int}")]
+        [Authorize(Roles = "Admin,Instructor")]
         public async Task<IActionResult> Delete(int id)
         {
             var lesson = await _context.Lessons
-                .FindAsync(id);
+                .Include(l => l.Course)
+                .FirstOrDefaultAsync(l => l.Id == id);
 
             if (lesson == null)
-                return NotFound(new
-                {
-                    message = "Bài học không tồn tại"
-                });
+                return NotFound();
+
+            if (lesson.Course == null ||
+                !CanManage(lesson.Course))
+                return Forbid();
 
             _context.Lessons.Remove(lesson);
+
             await _context.SaveChangesAsync();
 
             return Ok(new

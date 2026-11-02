@@ -217,6 +217,51 @@ namespace OnlineCourseManagement.Controllers
             });
         }
 
+        // PUT: api/users/5/reset-password
+        [HttpPut("{id:int}/reset-password")]
+        public async Task<IActionResult> ResetPassword(
+            int id,
+            [FromBody] ResetPasswordDto dto)
+        {
+            var user = await _context.Users.FindAsync(id);
+
+            if (user == null)
+            {
+                return NotFound(new
+                {
+                    message = "Không tìm thấy tài khoản"
+                });
+            }
+
+            if (user.Role != "Student")
+            {
+                return BadRequest(new
+                {
+                    message = "Chỉ được đặt lại mật khẩu Student"
+                });
+            }
+
+            if (string.IsNullOrWhiteSpace(dto.NewPassword) ||
+                dto.NewPassword.Length < 6)
+            {
+                return BadRequest(new
+                {
+                    message = "Mật khẩu phải có ít nhất 6 ký tự"
+                });
+            }
+
+            user.PasswordHash = _hasher.HashPassword(
+                user,
+                dto.NewPassword
+            );
+
+            await _context.SaveChangesAsync();
+
+            return Ok(new
+            {
+                message = "Đặt lại mật khẩu Student thành công"
+            });
+        }
         // DELETE: api/users/1
         [HttpDelete("{id:int}")]
         public async Task<IActionResult> Delete(int id)
